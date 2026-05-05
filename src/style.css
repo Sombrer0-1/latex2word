@@ -161,6 +161,10 @@ textarea.long-textarea {
   white-space: pre-wrap;
 }
 
+.preview-area.long-text-output table {
+  white-space: normal;
+}
+
 .preview-area.long-text-output math {
   font-size: 18px;
 }

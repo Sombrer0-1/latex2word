@@ -216,6 +216,221 @@ const MATH_ENVS = new Set([
   'math',
 ])
 
+const TABLE_ENVS = new Set([
+  'tabular', 'tabular*', 'tabularx', 'tabulary', 'longtable',
+])
+
+function matchBraceGroup(str, pos, openChar = '{') {
+  const closeChar = openChar === '{' ? '}' : ']'
+  let depth = 0
+  let i = pos
+  while (i < str.length) {
+    if (str[i] === '\\') { i += 2; continue }
+    if (str[i] === openChar) depth++
+    else if (str[i] === closeChar) { depth--; if (depth === 0) return i }
+    i++
+  }
+  return -1
+}
+
+function splitTableRow(row) {
+  const cells = []
+  let current = ''
+  let depth = 0
+  for (let i = 0; i < row.length; i++) {
+    const ch = row[i]
+    if (ch === '\\') { current += ch + (row[i + 1] || ''); i++; continue }
+    if (ch === '{') depth++
+    else if (ch === '}') depth--
+    else if (ch === '&' && depth === 0) {
+      cells.push(current.trim())
+      current = ''
+      continue
+    }
+    current += ch
+  }
+  cells.push(current.trim())
+  return cells
+}
+
+function processLatexFormatting(content) {
+  const commands = [
+    { cmd: /\\textbf\{/g, tag: 'b' },
+    { cmd: /\\textit\{/g, tag: 'i' },
+    { cmd: /\\emph\{/g, tag: 'em' },
+  ]
+  for (const { cmd, tag } of commands) {
+    let result = ''
+    let pos = 0
+    let m
+    while ((m = cmd.exec(content)) !== null) {
+      result += content.slice(pos, m.index)
+      const start = m.index + m[0].length - 1
+      const end = matchBraceGroup(content, start)
+      if (end !== -1) {
+        const inner = processLatexFormatting(content.slice(start + 1, end))
+        result += `<${tag}>${inner}</${tag}>`
+        pos = end + 1
+        cmd.lastIndex = pos
+      } else {
+        result += m[0]
+        pos = m.index + m[0].length
+        cmd.lastIndex = pos
+      }
+    }
+    result += content.slice(pos)
+    content = result
+  }
+  return content
+}
+
+function unescapeLatexChars(cell) {
+  return cell
+    .replace(/\\%/g, '%')
+    .replace(/\\\$/g, '$')
+    .replace(/\\&/g, '&')
+    .replace(/\\_/g, '_')
+    .replace(/\\#/g, '#')
+    .replace(/\\\{/g, '\u0001')   // placeholder, restored after formatting
+    .replace(/\\\}/g, '\u0002')
+}
+
+function unescapeLatexText(str) {
+  return str
+    .replace(/\\%/g, '%')
+    .replace(/\\\$/g, '$')
+    .replace(/\\&/g, '&')
+    .replace(/\\_/g, '_')
+    .replace(/\\#/g, '#')
+    .replace(/\\\{/g, '{')
+    .replace(/\\\}/g, '}')
+}
+
+function restoreLatexBraces(cell) {
+  return cell
+    .replace(/\u0001/g, '{')
+    .replace(/\u0002/g, '}')
+}
+
+function processInlineMath(cell) {
+  const placeholders = []
+  const result = cell.replace(/\$(.+?)\$/g, (match, latex) => {
+    try {
+      const rendered = temml.renderToString(latex, { displayMode: false, xml: true })
+      placeholders.push(rendered)
+      return `\u0003${placeholders.length - 1}\u0004`
+    } catch {
+      placeholders.push(match)
+      return `\u0003${placeholders.length - 1}\u0004`
+    }
+  })
+  return { text: result, placeholders }
+}
+
+function restoreInlineMath(text, placeholders) {
+  return text.replace(/\u0003(\d+)\u0004/g, (_, idx) => placeholders[Number(idx)] || '')
+}
+
+function processTableCellContent(content) {
+  let cell = content
+  // Unwrap \multicolumn{n}{col}{content}
+  const mcMatch = cell.match(/^\\multicolumn\{(\d+)\}\{[^}]*\}\{/)
+  if (mcMatch) {
+    const start = mcMatch.index + mcMatch[0].length - 1
+    const end = matchBraceGroup(cell, start)
+    if (end !== -1) {
+      cell = cell.slice(start + 1, end)
+    }
+  }
+  // Step 1: Process inline math while content is raw LaTeX
+  const { text: mathProcessed, placeholders } = processInlineMath(cell)
+  cell = mathProcessed
+  // Step 2: Convert LaTeX typographic escapes
+  cell = unescapeLatexChars(cell)
+  // Step 3: HTML escape
+  cell = cell
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/~/g, '&nbsp;')
+  // Step 4: Formatting
+  cell = processLatexFormatting(cell)
+  // Step 5: Restore inline math and brace placeholders
+  cell = restoreInlineMath(cell, placeholders)
+  cell = restoreLatexBraces(cell)
+  // Step 6: Strip remaining LaTeX commands
+  cell = cell.replace(/\\[a-zA-Z]+\*?\s*(\{[^}]*\})*/g, '')
+  return cell || '&nbsp;'
+}
+
+function parseTableContent(rawTable) {
+  const beginMatch = rawTable.match(/\\begin\{(\w+\*?)\}/)
+  if (!beginMatch) return null
+
+  const envName = beginMatch[1]
+  let pos = beginMatch.index + beginMatch[0].length
+
+  // Skip optional [pos] arg
+  while (pos < rawTable.length && /\s/.test(rawTable[pos])) pos++
+  if (rawTable[pos] === '[') {
+    const bracketEnd = matchBraceGroup(rawTable, pos, '[')
+    if (bracketEnd === -1) return null
+    pos = bracketEnd + 1
+  }
+  while (pos < rawTable.length && /\s/.test(rawTable[pos])) pos++
+
+  // Parse column spec {cols}
+  if (rawTable[pos] !== '{') return null
+  const colSpecEnd = matchBraceGroup(rawTable, pos)
+  if (colSpecEnd === -1) return null
+  pos = colSpecEnd + 1
+
+  // Locate closing \end{env}
+  const endStr = `\\end{${envName}}`
+  const endIdx = rawTable.lastIndexOf(endStr)
+  if (endIdx === -1) return null
+
+  const body = rawTable.slice(pos, endIdx).trim()
+
+  // Split body into rows by \\
+  const lines = body.split(/\\\\\s*(?:\[[^\]]*\])?\s*/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+
+  // Parse rows, stripping \hline and booktabs rules
+  const parsedRows = []
+  for (const line of lines) {
+    // Standalone rule commands
+    if (/^\\(?:hline|toprule|midrule|bottomrule)\s*$/.test(line)) continue
+    if (/^\\cline\{[^}]+\}\s*$/.test(line)) continue
+    // Strip rule commands within rows
+    let cleaned = line.replace(/\\(?:hline|toprule|midrule|bottomrule)\s*/g, '')
+    if (cleaned.length === 0) continue
+    parsedRows.push(cleaned)
+  }
+
+  // Build HTML table
+  let html = '<table border="1" cellspacing="0" cellpadding="0">\n'
+  let plainText = ''
+
+  for (const row of parsedRows) {
+    const cells = splitTableRow(row)
+    html += '  <tr>\n'
+    const plainRow = []
+    for (const cell of cells) {
+      const content = processTableCellContent(cell)
+      html += `    <td>${content}</td>\n`
+      // Plain text: strip LaTeX commands, keep cell text
+      plainRow.push(cell.replace(/\\[a-zA-Z]+\*?\s*(\{[^}]*\})*/g, '').trim() || ' ')
+    }
+    html += '  </tr>\n'
+    plainText += plainRow.join('\t') + '\n'
+  }
+
+  html += '</table>'
+  return { html, plainText: plainText.trimEnd() }
+}
+
 function parseTextWithMath(text) {
   const segments = []
   let pos = 0
@@ -230,6 +445,36 @@ function parseTextWithMath(text) {
 
     if (token.startsWith('\\begin{')) {
       const envName = token.match(/\\begin\{([^}]+)\}/)[1]
+
+      // Handle table environments
+      if (TABLE_ENVS.has(envName)) {
+        // Find matching \end{env} with nesting support
+        let depth = 1
+        const innerPattern = new RegExp('\\\\begin\\{' + escapeRegex(envName) + '\\}|\\\\end\\{' + escapeRegex(envName) + '\\}', 'g')
+        innerPattern.lastIndex = tokenPattern.lastIndex
+
+        let m
+        while ((m = innerPattern.exec(text)) !== null) {
+          if (m[0].startsWith('\\begin{')) depth++
+          else depth--
+          if (depth === 0) {
+            const raw = text.slice(start, m.index + m[0].length)
+            if (start > pos) {
+              segments.push({ type: 'text', content: text.slice(pos, start) })
+            }
+            const tableData = parseTableContent(raw)
+            if (tableData) {
+              segments.push({ type: 'table', html: tableData.html, plainText: tableData.plainText, raw })
+            } else {
+              segments.push({ type: 'text', content: raw })
+            }
+            pos = start + raw.length
+            tokenPattern.lastIndex = pos
+            break
+          }
+        }
+        continue
+      }
 
       // Skip non-math environments — leave them as plain text
       if (!MATH_ENVS.has(envName)) continue
@@ -324,9 +569,14 @@ function convertLongText() {
         const segContent = removeEmptyLines.value
           ? seg.content.split(/\r?\n/).filter((line) => line.trim() !== '').join('\n')
           : seg.content
-        html += escapeHtml(segContent)
-        text += segContent
-        clipboardParts.push({ type: 'text', content: segContent })
+        const unescaped = unescapeLatexText(segContent)
+        html += escapeHtml(unescaped)
+        text += unescaped
+        clipboardParts.push({ type: 'text', content: unescaped })
+      } else if (seg.type === 'table') {
+        html += seg.html
+        text += seg.plainText + '\n'
+        clipboardParts.push({ type: 'table', html: seg.html, plainText: seg.plainText })
       } else {
         try {
           const mathHtml = temml.renderToString(seg.content, { displayMode: seg.displayMode, xml: true })
@@ -734,8 +984,15 @@ function buildWordParagraphs(parts) {
   }
 
   parts.forEach((part) => {
-    if (part.type === 'text') appendText(part.content)
-    else appendMath(part)
+    if (part.type === 'text') {
+      appendText(part.content)
+    } else if (part.type === 'table') {
+      if (current().length) startParagraph()
+      current().push(part.html)
+      startParagraph()
+    } else {
+      appendMath(part)
+    }
   })
 
   return paragraphs

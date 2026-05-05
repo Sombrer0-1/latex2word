@@ -30,3 +30,6 @@ logs/
 
 # Claude
 .claude/
+
+# LaTeX source files (reference only, not part of the app)
+*.tex
