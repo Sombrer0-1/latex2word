@@ -1,6 +1,9 @@
 <template>
   <div>
     <h1>LaTeX → MathML Converter</h1>
+    <p class="author-credit">
+      by <a href="https://github.com/Sombrer0-1" target="_blank">Sombrer0-1</a> · 930937337@qq.com
+    </p>
 
     <div class="mode-tabs">
       <button

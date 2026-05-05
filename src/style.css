@@ -309,3 +309,21 @@ textarea.long-textarea {
   color: #fff;
   border-color: #4a6cf7;
 }
+
+.author-credit {
+  text-align: center;
+  font-size: 15px;
+  color: #777;
+  margin: -12px 0 20px 0;
+  user-select: none;
+}
+
+.author-credit a {
+  color: #4a6cf7;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.author-credit a:hover {
+  text-decoration: underline;
+}
