@@ -33,3 +33,6 @@ logs/
 
 # LaTeX source files (reference only, not part of the app)
 *.tex
+
+# Electron build output
+release/
