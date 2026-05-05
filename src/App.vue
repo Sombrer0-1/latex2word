@@ -63,6 +63,10 @@
 
     <!-- Long Text Mode -->
     <template v-if="mode === 'longtext'">
+      <div class="scroll-nav-top">
+        <button class="btn-scroll" @click="scrollPageToBottom">↓ 传送到底部</button>
+      </div>
+
       <div class="input-section">
         <label class="section-label">Mixed Text Input</label>
         <textarea
@@ -106,6 +110,10 @@
           </button>
           <span v-else class="copied-toast">{{ copyMessage }}</span>
         </div>
+      </div>
+
+      <div class="scroll-nav-btm">
+        <button class="btn-scroll" @click="scrollPageToTop">↑ 返回顶部</button>
       </div>
     </template>
   </div>
@@ -358,6 +366,14 @@ function clearLongText() {
   error.value = ''
   copied.value = false
   removeEmptyLines.value = false
+}
+
+function scrollPageToBottom() {
+  window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' })
+}
+
+function scrollPageToTop() {
+  window.scrollTo({ top: 0, behavior: 'smooth' })
 }
 
 // --- Shared ---

@@ -275,3 +275,33 @@ textarea.long-textarea {
   cursor: pointer;
   accent-color: #4a6cf7;
 }
+
+.scroll-nav-top {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 16px;
+}
+
+.scroll-nav-btm {
+  display: flex;
+  justify-content: center;
+  margin-top: 24px;
+  padding-bottom: 24px;
+}
+
+.btn-scroll {
+  padding: 6px 16px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  background: #f8f9fa;
+  font-size: 13px;
+  color: #666;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.btn-scroll:hover {
+  background: #4a6cf7;
+  color: #fff;
+  border-color: #4a6cf7;
+}
