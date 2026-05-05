@@ -81,6 +81,10 @@
             <input type="checkbox" v-model="removeEmptyLines" @change="convertLongText" />
             <span>去除空行</span>
           </label>
+          <label class="checkbox-label">
+            <input type="checkbox" v-model="pureMode" @change="convertLongText" />
+            <span>纯净模式</span>
+          </label>
         </div>
 
         <div class="toolbar">
@@ -182,6 +186,7 @@ const renderedText = ref('')
 const renderedClipboardHtml = ref('')
 const detectedCount = ref(0)
 const removeEmptyLines = ref(false)
+const pureMode = ref(false)
 
 const longExample = `时间序列是按时间顺序排列的观测集合。单变量时间序列可表示为
 \\begin{equation}
@@ -431,6 +436,187 @@ function parseTableContent(rawTable) {
   return { html, plainText: plainText.trimEnd() }
 }
 
+// --- Pure Mode: strip LaTeX boilerplate ---
+
+function stripCommandWithArgs(text, cmdName) {
+  const re = new RegExp('\\\\' + cmdName + '\\*?', 'g')
+  let out = ''
+  let pos = 0
+  let m
+  while ((m = re.exec(text)) !== null) {
+    out += text.slice(pos, m.index)
+    let i = m.index + m[0].length
+    while (i < text.length && /[\s%]/.test(text[i]) && text[i] !== '\n') i++
+    while (i < text.length) {
+      if (text[i] === '{') {
+        const end = matchBraceGroup(text, i)
+        if (end === -1) break
+        i = end + 1
+      } else if (text[i] === '[') {
+        const end = matchBraceGroup(text, i, '[')
+        if (end === -1) break
+        i = end + 1
+      } else {
+        break
+      }
+    }
+    pos = i
+    re.lastIndex = i
+  }
+  out += text.slice(pos)
+  return out
+}
+
+function unwrapResizebox(text) {
+  const re = /\\resizebox\*?\s*/g
+  let out = ''
+  let pos = 0
+  let m
+  while ((m = re.exec(text)) !== null) {
+    out += text.slice(pos, m.index)
+    let i = m.index + m[0].length
+    // Skip first brace group: {\textwidth}
+    while (i < text.length && /\s/.test(text[i])) i++
+    if (text[i] === '{') {
+      const end = matchBraceGroup(text, i)
+      if (end === -1) break
+      i = end + 1
+    }
+    // Skip second brace group: {!}
+    while (i < text.length && /\s/.test(text[i])) i++
+    if (text[i] === '{') {
+      const end = matchBraceGroup(text, i)
+      if (end === -1) break
+      i = end + 1
+    }
+    // Keep third brace group content (the actual table/box)
+    while (i < text.length && /\s/.test(text[i])) i++
+    if (text[i] === '{') {
+      const end = matchBraceGroup(text, i)
+      if (end === -1) break
+      // Extract inner content (without outer braces)
+      const inner = text.slice(i + 1, end)
+      out += inner
+      i = end + 1
+    }
+    pos = i
+    re.lastIndex = i
+  }
+  out += text.slice(pos)
+  return out
+}
+
+function cleanTableFloatBlock(block) {
+  // extract \caption text, strip everything else, keep tabular
+  let captionText = ''
+  const capMatch = block.match(/\\caption\{([^}]*)\}/)
+  if (capMatch) {
+    captionText = capMatch[1].trim()
+  }
+  // Unwrap \resizebox
+  let cleaned = unwrapResizebox(block)
+  // Strip \begin{table}[...] and \end{table}
+  cleaned = cleaned.replace(/\\begin\{table\}(\[[^\]]*\])?\s*/g, '')
+  cleaned = cleaned.replace(/\\end\{table\}\s*/g, '')
+  // Strip \centering, \label, \caption
+  cleaned = cleaned.replace(/\\centering\s*/g, '')
+  cleaned = cleaned.replace(/\\label\{[^}]*\}\s*/g, '')
+  cleaned = cleaned.replace(/\\caption\{[^}]*\}\s*/g, '')
+  // Add caption text above the table if present
+  if (captionText) {
+    cleaned = captionText + '\n' + cleaned.trim()
+  }
+  return cleaned.trim()
+}
+
+function cleanTableFloats(text) {
+  let result = ''
+  let pos = 0
+  const tablePattern = /\\begin\{table\}/g
+  let m
+  while ((m = tablePattern.exec(text)) !== null) {
+    result += text.slice(pos, m.index)
+    const start = m.index
+    let depth = 1
+    const innerPattern = /\\begin\{table\}|\\end\{table\}/g
+    innerPattern.lastIndex = tablePattern.lastIndex
+    let im
+    while ((im = innerPattern.exec(text)) !== null) {
+      if (im[0].startsWith('\\begin{')) depth++
+      else depth--
+      if (depth === 0) {
+        const block = text.slice(start, im.index + im[0].length)
+        result += cleanTableFloatBlock(block) + '\n'
+        pos = im.index + im[0].length
+        tablePattern.lastIndex = pos
+        break
+      }
+    }
+  }
+  result += text.slice(pos)
+  return result
+}
+
+const BOILERPLATE_NO_ARG = [
+  'tableofcontents', 'listoffigures', 'listoftables',
+  'clearpage', 'newpage', 'pagebreak', 'linebreak',
+  'bigskip', 'medskip', 'smallskip',
+  'noindent', 'indent', 'centering',
+  'raggedright', 'raggedleft',
+]
+
+const BOILERPLATE_WITH_ARGS = [
+  'usepackage', 'documentclass', 'setstretch', 'setlist', 'setcounter',
+  'addtocounter', 'setlength', 'addtolength', 'settodepth', 'addtodepth',
+  'newcommand', 'renewcommand', 'providecommand', 'def',
+  'newenvironment', 'renewenvironment', 'newtheorem',
+  'DeclareMathOperator', 'DeclareMathSymbol',
+  'hypersetup', 'allowdisplaybreaks', 'setenumerate',
+  'newcolumntype', 'definecolor', 'renewcommand',
+]
+
+function cleanLatexSource(text) {
+  let s = text
+
+  // 1. Strip preamble (everything before \begin{document})
+  const docStart = s.match(/\\begin\{document\}/)
+  if (docStart) {
+    s = s.slice(docStart.index + docStart[0].length)
+  }
+
+  // 2. Strip \end{document} and trailing content
+  s = s.replace(/\\end\{document\}[\s\S]*$/, '')
+
+  // 3. Extract headings: \chapter/section/subsection/subsubsection to plain text
+  s = s.replace(/\\chapter\*?\{([^}]*)\}/g, '\n$1\n')
+  s = s.replace(/\\section\*?\{([^}]*)\}/g, '\n$1\n')
+  s = s.replace(/\\subsection\*?\{([^}]*)\}/g, '\n$1\n')
+  s = s.replace(/\\subsubsection\*?\{([^}]*)\}/g, '\n$1\n')
+
+  // 4. Clean table floats
+  s = cleanTableFloats(s)
+
+  // 5. Strip no-argument boilerplate commands
+  for (const cmd of BOILERPLATE_NO_ARG) {
+    s = s.replace(new RegExp('\\\\' + cmd + '\\*?\\s*', 'g'), '')
+  }
+
+  // 6. Strip boilerplate commands with arguments (brace-aware)
+  for (const cmd of BOILERPLATE_WITH_ARGS) {
+    s = stripCommandWithArgs(s, cmd)
+  }
+
+  // 7. Strip comments (lines starting with %, but not \%)
+  s = s.replace(/(?<!\\)%.*$/gm, '')
+
+  // 8. Clean up: remove leading/trailing whitespace on each line, collapse 3+ blank lines
+  s = s.replace(/[ \t]+$/gm, '')
+  s = s.replace(/\n{3,}/g, '\n\n')
+  s = s.trim()
+
+  return s
+}
+
 function parseTextWithMath(text) {
   const segments = []
   let pos = 0
@@ -558,7 +744,8 @@ function convertLongText() {
   if (!longTextInput.value.trim()) return
 
   try {
-    const segments = parseTextWithMath(longTextInput.value)
+    const srcText = pureMode.value ? cleanLatexSource(longTextInput.value) : longTextInput.value
+    const segments = parseTextWithMath(srcText)
     let html = ''
     let text = ''
     let mathCount = 0
@@ -616,6 +803,7 @@ function clearLongText() {
   error.value = ''
   copied.value = false
   removeEmptyLines.value = false
+  pureMode.value = false
 }
 
 function scrollPageToBottom() {
