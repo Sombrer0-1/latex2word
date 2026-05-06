@@ -1171,7 +1171,7 @@ function buildWordParagraphs(parts) {
   const appendMath = (part) => {
     if (part.displayMode && current().length) startParagraph()
     if (!part.displayMode && currentHasDisplayMath()) startParagraph()
-    current().push(part.omml || part.mathml)
+    current().push(part.mathml || part.omml)
   }
 
   parts.forEach((part) => {
