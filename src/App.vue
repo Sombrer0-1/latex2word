@@ -775,7 +775,7 @@ function convertLongText() {
           text += mathText
           clipboardParts.push({
             type: 'math',
-            mathml: mathHtml,
+            mathml: unwrapSingleChildRows(mathHtml),
             omml: toWordMathHtml(mathHtml, seg.displayMode),
             displayMode: seg.displayMode,
           })
@@ -1005,6 +1005,30 @@ function unwrapMathmlElements(root, localNames) {
   }
 }
 
+function unwrapSingleChildRows(mathml) {
+  if (typeof DOMParser === 'undefined') return mathml
+  const doc = new DOMParser().parseFromString(mathml, 'application/xml')
+  if (doc.getElementsByTagName('parsererror').length) return mathml
+
+  let changed = true
+  while (changed) {
+    changed = false
+    const rows = Array.from(doc.getElementsByTagName('mrow'))
+    for (const row of rows) {
+      const children = Array.from(row.childNodes).filter((n) => n.nodeType === 1)
+      if (children.length === 1 && !row.hasAttributes()) {
+        const parent = row.parentNode
+        if (parent) {
+          parent.replaceChild(children[0], row)
+          changed = true
+        }
+      }
+    }
+  }
+
+  return new XMLSerializer().serializeToString(doc.documentElement)
+}
+
 function elementChildren(node) {
   return Array.from(node.childNodes).filter((child) => child.nodeType === 1)
 }
@@ -1169,9 +1193,14 @@ function buildWordParagraphs(parts) {
   }
 
   const appendMath = (part) => {
-    if (part.displayMode && current().length) startParagraph()
-    if (!part.displayMode && currentHasDisplayMath()) startParagraph()
-    current().push(part.mathml || part.omml)
+    if (part.displayMode) {
+      if (current().length) startParagraph()
+      current().push(part.mathml || part.omml)
+      startParagraph()
+    } else {
+      if (currentHasDisplayMath()) startParagraph()
+      current().push(part.mathml || part.omml)
+    }
   }
 
   parts.forEach((part) => {
