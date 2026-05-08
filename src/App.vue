@@ -228,6 +228,10 @@ const TABLE_ENVS = new Set([
   'tabular', 'tabular*', 'tabularx', 'tabulary', 'longtable',
 ])
 
+const ALGO_ENVS = new Set([
+  'algorithm',
+])
+
 function matchBraceGroup(str, pos, openChar = '{') {
   const closeChar = openChar === '{' ? '}' : ']'
   let depth = 0
@@ -433,6 +437,247 @@ function parseTableContent(rawTable) {
     }
     html += '  </tr>\n'
     plainText += plainRow.join('\t') + '\n'
+  }
+
+  html += '</table>'
+  return { html, plainText: plainText.trimEnd() }
+}
+
+// --- Algorithm Environment Parsing ---
+
+function processAlgoText(text) {
+  let t = text.trim()
+
+  // Inline math → temml (placeholder approach to protect from HTML escaping)
+  const mathData = processInlineMath(t)
+  t = mathData.text
+
+  // Symbol replacements (before HTML escape)
+  t = t
+    .replace(/\\leftarrow\b/g, '\u2190')
+    .replace(/\\gets\b/g, '\u2190')
+    .replace(/\\rightarrow\b/g, '\u2192')
+    .replace(/\\to\b/g, '\u2192')
+    .replace(/\\Leftarrow\b/g, '\u21D0')
+    .replace(/\\Rightarrow\b/g, '\u21D2')
+    .replace(/\\leftrightarrow\b/g, '\u2194')
+    .replace(/\\uparrow\b/g, '\u2191')
+    .replace(/\\downarrow\b/g, '\u2193')
+    .replace(/\\neq\b/g, '\u2260')
+    .replace(/\\le\b/g, '\u2264')
+    .replace(/\\ge\b/g, '\u2265')
+
+  // LaTeX escapes
+  t = unescapeLatexText(t)
+
+  // HTML escape
+  t = t
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+
+  // Formatting
+  t = processLatexFormatting(t)
+
+  // Restore inline math
+  t = restoreInlineMath(t, mathData.placeholders)
+
+  // Strip remaining LaTeX commands
+  t = t.replace(/\\[a-zA-Z]+\*?\s*(\{[^}]*\})*/g, '')
+
+  return t || '&nbsp;'
+}
+
+function algoContentToHtml(content) {
+  const parts = []
+  if (content.keyword) parts.push(`<b>${content.keyword}</b>`)
+  if (content.cond) parts.push(` ${content.cond}`)
+  if (content.keyword === 'else if' || content.keyword === 'if' || content.keyword === 'for' || content.keyword === 'while') {
+    parts.push(' <b>then</b>')
+  } else if (content.keyword === 'for' || content.keyword === 'while') {
+    parts.push(' <b>do</b>')
+  }
+  if (content.text) parts.push(` ${content.text}`)
+  if (content.then) parts.push(` ${content.then}`)
+  return parts.join('')
+}
+
+function algoContentToPlain(content) {
+  const parts = []
+  if (content.keyword) parts.push(content.keyword.toUpperCase())
+  if (content.cond) parts.push(` ${content.cond}`)
+  if (content.text) parts.push(` ${content.text}`)
+  if (content.then) parts.push(` ${content.then}`)
+  return parts.join('')
+}
+
+function parseAlgoLine(line, indent) {
+  let cmd, content, newIndent = indent
+
+  const cmdMatch = line.match(/^\\([A-Z][A-Za-z]*)\b\s*/)
+  if (cmdMatch) {
+    cmd = cmdMatch[1]
+    let rest = line.slice(cmdMatch[0].length)
+
+    switch (cmd) {
+      case 'REQUIRE':
+        content = { keyword: 'Require:', text: processAlgoText(rest) }
+        break
+      case 'ENSURE':
+        content = { keyword: 'Ensure:', text: processAlgoText(rest) }
+        break
+      case 'STATE':
+        content = { text: processAlgoText(rest) }
+        break
+      case 'IF':
+      case 'ELSIF': {
+        let cond = ''
+        const condMatch = rest.match(/^\{/)
+        if (condMatch) {
+          const end = matchBraceGroup(rest, condMatch.index)
+          cond = rest.slice(condMatch.index + 1, end)
+          rest = rest.slice(end + 1)
+        }
+        const label = cmd === 'IF' ? 'if' : 'else if'
+        content = { keyword: label, cond: processAlgoText(cond), text: processAlgoText(rest) }
+        if (cmd === 'IF') newIndent = indent + 1
+        break
+      }
+      case 'ELSE':
+        content = { keyword: 'else' }
+        return { content, indent: Math.max(0, indent - 1), indentNext: indent }
+      case 'ENDIF':
+        content = { keyword: 'end if' }
+        newIndent = Math.max(0, indent - 1)
+        return { content, indent: newIndent, indentNext: newIndent }
+      case 'FOR': {
+        let cond = ''
+        const condMatch = rest.match(/^\{/)
+        if (condMatch) {
+          const end = matchBraceGroup(rest, condMatch.index)
+          cond = rest.slice(condMatch.index + 1, end)
+        }
+        content = { keyword: 'for', cond: processAlgoText(cond), text: 'do' }
+        newIndent = indent + 1
+        break
+      }
+      case 'ENDFOR':
+        content = { keyword: 'end for' }
+        newIndent = Math.max(0, indent - 1)
+        return { content, indent: newIndent, indentNext: newIndent }
+      case 'ENDWHILE':
+        content = { keyword: 'end while' }
+        newIndent = Math.max(0, indent - 1)
+        return { content, indent: newIndent, indentNext: newIndent }
+      case 'WHILE': {
+        let cond = ''
+        const condMatch = rest.match(/^\{/)
+        if (condMatch) {
+          const end = matchBraceGroup(rest, condMatch.index)
+          cond = rest.slice(condMatch.index + 1, end)
+        }
+        content = { keyword: 'while', cond: processAlgoText(cond), text: 'do' }
+        newIndent = indent + 1
+        break
+      }
+      case 'ENDWHILE':
+        content = { keyword: 'end while' }
+        newIndent = Math.max(0, indent - 1)
+        break
+      case 'RETURN':
+        content = { keyword: 'return', text: processAlgoText(rest) }
+        break
+      case 'PRINT':
+        content = { keyword: 'print', text: processAlgoText(rest) }
+        break
+      case 'COMMENT':
+        content = { keyword: '//', text: processAlgoText(rest) }
+        break
+      default:
+        content = { text: processAlgoText(line) }
+    }
+  } else {
+    content = { text: processAlgoText(line) }
+  }
+
+  return { content, indent, indentNext: newIndent }
+}
+
+function parseAlgorithmicBody(body, startNum) {
+  const lines = body.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0 && !l.startsWith('%'))
+  const rows = []
+  let lineNum = startNum
+  let indent = 0
+
+  for (const line of lines) {
+    const { content, indent: rowIndent, indentNext } = parseAlgoLine(line, indent)
+    rows.push({
+      number: content ? lineNum : '',
+      indent: rowIndent,
+      html: content ? algoContentToHtml(content) : processAlgoText(line),
+      plainText: content ? algoContentToPlain(content) : processAlgoText(line).replace(/<[^>]+>/g, ''),
+    })
+    indent = indentNext
+    if (content) lineNum++
+  }
+
+  return rows
+}
+
+function parseAlgorithmContent(raw) {
+  const beginMatch = raw.match(/\\begin\{algorithm\}/)
+  if (!beginMatch) return null
+
+  let pos = beginMatch.index + beginMatch[0].length
+  while (pos < raw.length && /\s/.test(raw[pos])) pos++
+  if (raw[pos] === '[') {
+    const end = matchBraceGroup(raw, pos, '[')
+    if (end === -1) return null
+    pos = end + 1
+  }
+
+  const endIdx = raw.lastIndexOf('\\end{algorithm}')
+  if (endIdx === -1) return null
+
+  const body = raw.slice(pos, endIdx).trim()
+
+  // Extract caption
+  let captionText = ''
+  const capMatch = body.match(/\\caption\{([^}]*)\}/)
+  if (capMatch) captionText = capMatch[1].trim()
+
+  // Extract algorithmic environment
+  let lineNum = 1
+  let algoBody = ''
+  const algoMatch = body.match(/\\begin\{algorithmic\}(?:\[(\d+)\])?/)
+  if (algoMatch) {
+    if (algoMatch[1]) lineNum = parseInt(algoMatch[1])
+    const algoStart = algoMatch.index + algoMatch[0].length
+    const algoEndMatch = body.match(/\\end\{algorithmic\}/)
+    const algoEnd = algoEndMatch ? algoEndMatch.index : body.length
+    algoBody = body.slice(algoStart, algoEnd).trim()
+  } else {
+    algoBody = body
+      .replace(/\\caption\{[^}]*\}\s*/g, '')
+      .replace(/\\label\{[^}]*\}\s*/g, '')
+      .trim()
+  }
+
+  const rows = parseAlgorithmicBody(algoBody, lineNum)
+
+  let html = '<table border="1" cellspacing="0" cellpadding="0">\n'
+  let plainText = ''
+
+  if (captionText) {
+    html += `  <tr><td colspan="2"><b>${captionText}</b></td></tr>\n`
+    plainText += captionText + '\n'
+  }
+
+  for (const row of rows) {
+    const num = row.number ? `<td>${row.number}</td>` : '<td></td>'
+    const padding = '&nbsp;'.repeat(row.indent * 4)
+    html += `  <tr>${num}<td>${padding}${row.html}</td></tr>\n`
+    plainText += (row.number ? row.number + '. ' : '') + '  '.repeat(row.indent) + row.plainText + '\n'
   }
 
   html += '</table>'
@@ -654,6 +899,35 @@ function parseTextWithMath(text) {
             const tableData = parseTableContent(raw)
             if (tableData) {
               segments.push({ type: 'table', html: tableData.html, plainText: tableData.plainText, raw })
+            } else {
+              segments.push({ type: 'text', content: raw })
+            }
+            pos = start + raw.length
+            tokenPattern.lastIndex = pos
+            break
+          }
+        }
+        continue
+      }
+
+      // Handle algorithm environments
+      if (ALGO_ENVS.has(envName)) {
+        let depth = 1
+        const innerPattern = new RegExp('\\\\begin\\{' + escapeRegex(envName) + '\\}|\\\\end\\{' + escapeRegex(envName) + '\\}', 'g')
+        innerPattern.lastIndex = tokenPattern.lastIndex
+
+        let m
+        while ((m = innerPattern.exec(text)) !== null) {
+          if (m[0].startsWith('\\begin{')) depth++
+          else depth--
+          if (depth === 0) {
+            const raw = text.slice(start, m.index + m[0].length)
+            if (start > pos) {
+              segments.push({ type: 'text', content: text.slice(pos, start) })
+            }
+            const algoData = parseAlgorithmContent(raw)
+            if (algoData) {
+              segments.push({ type: 'table', html: algoData.html, plainText: algoData.plainText, raw })
             } else {
               segments.push({ type: 'text', content: raw })
             }
