@@ -611,14 +611,16 @@ function parseAlgorithmicBody(body, startNum) {
 
   for (const line of lines) {
     const { content, indent: rowIndent, indentNext } = parseAlgoLine(line, indent)
+    const isHeader = /^\\(?:REQUIRE|ENSURE)\b/.test(line)
+    const num = (!isHeader && content) ? lineNum : ''
     rows.push({
-      number: content ? lineNum : '',
+      number: num,
       indent: rowIndent,
       html: content ? algoContentToHtml(content) : processAlgoText(line),
       plainText: content ? algoContentToPlain(content) : processAlgoText(line).replace(/<[^>]+>/g, ''),
     })
     indent = indentNext
-    if (content) lineNum++
+    if (!isHeader && content) lineNum++
   }
 
   return rows
@@ -669,18 +671,23 @@ function parseAlgorithmContent(raw) {
   let plainText = ''
 
   if (captionText) {
-    html += `  <tr><td colspan="2"><b>${captionText}</b></td></tr>\n`
+    html += `  <tr><td><b>${captionText}</b></td></tr>\n`
     plainText += captionText + '\n'
   }
 
+  // Single cell containing all code lines
+  let codeHtml = ''
+  let codePlain = ''
   for (const row of rows) {
-    const num = row.number ? `<td>${row.number}</td>` : '<td></td>'
+    const num = row.number ? `${row.number}:` : ''
     const padding = '&nbsp;'.repeat(row.indent * 4)
-    html += `  <tr>${num}<td>${padding}${row.html}</td></tr>\n`
-    plainText += (row.number ? row.number + '. ' : '') + '  '.repeat(row.indent) + row.plainText + '\n'
+    codeHtml += num + padding + row.html + '<br>'
+    codePlain += (row.number ? row.number + '. ' : '') + '  '.repeat(row.indent) + row.plainText + '\n'
   }
 
+  html += `  <tr><td>${codeHtml}</td></tr>\n`
   html += '</table>'
+  plainText += codePlain
   return { html, plainText: plainText.trimEnd() }
 }
 
